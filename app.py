@@ -758,21 +758,41 @@ with tab_scr:
                                       "TP1", "TP2", "R:R TP2", "B/XA", "C/AB", "Umur C",
                                       "D Terkunci", "Value Min 20H (M)"])
 
-    view = table[
-        table["Pola"].isin(f_pola) & table["Arah"].isin(f_arah) & table["Status"].isin(f_status)
-        & (table["Value Min 20H (M)"] >= f_val)
-        & ((table["Jarak PRZ %"] <= f_dist) | table["Jarak PRZ %"].isna())
-    ].copy()
+    # Saring bertahap supaya alasan tiap baris tersembunyi bisa dihitung
+    m_status = table["Status"].isin(f_status)
+    m_pola = table["Pola"].isin(f_pola) & table["Arah"].isin(f_arah)
+    m_val = table["Value Min 20H (M)"] >= f_val
+    m_dist = (table["Jarak PRZ %"] <= f_dist) | table["Jarak PRZ %"].isna()
+    keep = m_status & m_pola & m_val & m_dist
+
+    hid = []
+    rest = ~keep
+    for lab, m in [("status " + "/".join(sorted(set(table.loc[~m_status, "Status"])) or ["-"]),
+                    m_status),
+                   ("pola/arah", m_pola),
+                   (f"value di bawah {f_val:g} M", m_val),
+                   (f"jarak PRZ lebih dari {f_dist:g}%", m_dist)]:
+        cnt = int((rest & ~m).sum())
+        if cnt:
+            hid.append(f"{cnt} {lab}")
+        rest = rest & m
+
+    view = table[keep].copy()
     view["_s"] = view["Status"].map(STATUS_ORDER)
     view = view.sort_values(["_s", "Jarak PRZ %"], na_position="last").drop(columns="_s")
     view = view.reset_index(drop=True)
 
     st.markdown(cards_html([
         ("SAHAM TERMUAT", n_loaded, COL["text"]),
-        ("DI PRZ", int((table["Status"] == "Di PRZ").sum()), COL["violet"]),
-        ("MENUJU PRZ", int((table["Status"] == "Menuju PRZ").sum()), COL["cyan"]),
-        ("GAGAL", int((table["Status"] == "Gagal").sum()), COL["red"]),
+        ("DI PRZ", int((view["Status"] == "Di PRZ").sum()), COL["violet"]),
+        ("MENUJU PRZ", int((view["Status"] == "Menuju PRZ").sum()), COL["cyan"]),
+        ("GAGAL", int((view["Status"] == "Gagal").sum()), COL["red"]),
     ]), unsafe_allow_html=True)
+    rincian = f"{len(table)} pola terdeteksi · {len(view)} tampil"
+    if hid:
+        rincian += " · tersembunyi oleh filter: " + ", ".join(hid)
+    st.markdown(f'<div class="hb-sub" style="margin:-4px 0 10px 0">{rincian}</div>',
+                unsafe_allow_html=True)
 
     with st.expander("▌CORONG SARINGAN: kenapa polanya sedikit?"):
         steps = [
@@ -810,7 +830,7 @@ with tab_scr:
     num3 = st.column_config.NumberColumn(format="%.3f")
     fsig = hash((tuple(f_pola), tuple(f_arah), tuple(f_status), f_dist, f_val, atr_len,
                  mult, max_age, len(codes)))
-    fkey = f"tbl_{fsig}"
+    fkey = f"tbl2_{fsig}"
 
     event = None
     if view.empty:
@@ -829,6 +849,9 @@ with tab_scr:
         event = st.dataframe(
             styled, hide_index=True, width="stretch", height=min(520, 38 + 35 * len(show)),
             on_select="rerun", selection_mode="single-row", key=fkey,
+            column_order=["Kode", "Pola", "Arah", "Status", "Harga", "Jarak PRZ %",
+                          "PRZ Bawah", "PRZ Atas", "Entry D", "SL", "TP1", "TP2", "R:R TP2",
+                          "B/XA", "C/AB", "Umur C", "D Terkunci", "Value Min 20H (M)"],
             column_config={
                 "Harga": num0, "PRZ Bawah": num0, "PRZ Atas": num0, "Entry D": num0,
                 "SL": num0, "TP1": num0, "TP2": num0, "Jarak PRZ %": num2, "R:R TP2": num2,
