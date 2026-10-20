@@ -511,7 +511,9 @@ def run_scan(codes, atr_len, mult, max_age, stop_basis="Low intraday", buf_atr=0
                 "Jarak PRZ %": p["dist"], "PRZ Bawah": z0["lo"], "PRZ Atas": z0["hi"],
                 "Entry D": p["entry"], "SL": p["sl"], "SL Efektif": p["sl_eff"],
                 "Jarak ke SL %": p["jebol"], "TP1": p["tp1"], "TP2": p["tp2"],
-                "R:R TP2": p["rr"], "R:R Skrg TP1": p["rr_now1"], "R:R Skrg TP2": p["rr_now2"],
+                "R:R TP2": p["rr"],
+                "R:R Rencana": p["rr"] if p["status"] == "Menuju PRZ" else p["rr_now2"],
+                "R:R Skrg TP1": p["rr_now1"], "R:R Skrg TP2": p["rr_now2"],
                 "Ke SL %": p["to_sl"], "Ke TP2 %": p["to_tp2"], "B/XA": p["b_ratio"], "C/AB": p["c_ratio"],
                 "Catatan": p["catatan"], "Posisi vs PRZ": p["posisi"],
                 "Tembus Terdalam %": p["tembus"], "Umur C": p["age"], "D Terkunci": "Ya" if p["d_locked"] else "-",
@@ -758,6 +760,8 @@ section[data-testid="stSidebar"] {{ background:#080b10; border-right:1px solid #
 .hb-mc .t .k {{ font-weight:800; color:#ffffff; font-size:20px; }}
 .hb-mc .t .b {{ float:right; font-size:12px; font-weight:800; border:1px solid; padding:2px 8px;
   letter-spacing:1px; }}
+.hb-mc .q {{ color:{COL['cyan']}; font-size:15px; margin-top:4px; border-top:1px dashed #22313d;
+  padding-top:4px; }}
 .hb-mc .n {{ color:{COL['amber']}; font-size:13px; margin-top:4px; }}
 .hb-lad-r {{ display:grid; grid-template-columns:1.6fr 1fr 0.8fr; gap:8px; padding:5px 10px;
   background:{COL['panel']}; margin-bottom:3px; font-size:13px; }}
@@ -954,11 +958,15 @@ with st.sidebar:
                           index=STOP_OPTS.index(sb) if sb in STOP_OPTS else 0,
                           help="Low intraday: pola Gagal begitu ekor candle menembus SL. "
                                "Close harian: hanya dihitung jebol kalau harga DITUTUP di luar SL.")
-    buf_atr = st.number_input("Buffer di luar SL (× ATR)", 0.0, 3.0, qp_get("buf", 0.0, float),
-                              0.25,
+    buf_atr = st.number_input("Buffer di luar SL (× ATR)", 0.0, 1.0,
+                              min(max(qp_get("buf", 0.0, float), 0.0), 1.0), 0.25,
                               help="Toleransi tambahan di luar SL pola. ATR diambil saat titik C. "
                                    "Contoh 0.5 = pola baru Gagal jika tembus SL lebih dari "
                                    "setengah ATR.")
+
+    if buf_atr > 0.5:
+        st.warning("Buffer besar: pola yang sudah rusak bisa tetap tampil hidup. "
+                   "Untuk ekor candle sesaat, lebih tepat pakai basis stop Close harian.")
 
     run = st.button("▶ PINDAI ULANG", width="stretch")
     if run:
@@ -982,6 +990,11 @@ with st.sidebar:
                          help="Seberapa jauh harga pernah menembus sisi jauh PRZ sejak titik C "
                               "(sisi bawah untuk bullish, sisi atas untuk bearish). "
                               "0 = hanya pola yang belum pernah menembus PRZ.")
+    f_rr = st.slider("R:R minimum ke TP2 (×)", 0.0, 6.0,
+                     min(max(qp_get("rr", 2.0, float), 0.0), 6.0), 0.25,
+                     help="Menuju PRZ dihitung dari entry D (rencana antri beli). Status lain "
+                          "dihitung dari harga sekarang. 2× = cukup menang 1 dari 3 transaksi "
+                          "untuk impas. Geser ke 0 untuk menampilkan semua.")
     f_dist = st.slider("Jarak maks. ke PRZ (%)", 0.0, 50.0,
                        min(max(qp_get("dist", 15.0, float), 0.0), 50.0), 0.5)
     f_val = st.number_input("Value transaksi minimum harian 20H (miliar)", 0.0, 1000.0,
@@ -997,7 +1010,7 @@ try:
         "m": f"{mult:g}", "age": str(int(max_age)), "sb": stop_basis, "buf": f"{buf_atr:g}",
         "pola": ",".join(f_pola), "arah": ",".join(f_arah), "st": ",".join(f_status),
         "dist": f"{f_dist:g}", "val": f"{f_val:g}",
-        "pos": ",".join(f_pos), "tmb": f"{f_tembus:g}",
+        "pos": ",".join(f_pos), "tmb": f"{f_tembus:g}", "rr": f"{f_rr:g}",
     })
 except Exception:
     pass
@@ -1016,8 +1029,8 @@ with tab_scr:
     if table.empty:
         table = pd.DataFrame(columns=["_id", "Kode", "Pola", "Arah", "Status", "Harga",
                                       "Jarak PRZ %", "PRZ Bawah", "PRZ Atas", "Entry D", "SL",
-                                      "SL Efektif", "Jarak ke SL %", "TP1", "TP2", "R:R TP2", "R:R Skrg TP1", "R:R Skrg TP2",
-                                      "Catatan", "Posisi vs PRZ", "Tembus Terdalam %", "Ke SL %", "Ke TP2 %",
+                                      "SL Efektif", "Jarak ke SL %", "TP1", "TP2", "R:R TP2", "R:R Rencana", "R:R Skrg TP1",
+                                      "R:R Skrg TP2", "Catatan", "Posisi vs PRZ", "Tembus Terdalam %", "Ke SL %", "Ke TP2 %",
                                       "B/XA", "C/AB", "Umur C",
                                       "D Terkunci", "Value Min 20H (M)"])
 
@@ -1027,7 +1040,9 @@ with tab_scr:
     m_val = table["Value Min 20H (M)"] >= f_val
     m_dist = (table["Jarak PRZ %"] <= f_dist) | table["Jarak PRZ %"].isna()
     m_pos = table["Posisi vs PRZ"].isin(f_pos) & (table["Tembus Terdalam %"] <= f_tembus + 1e-9)
-    keep = m_status & m_pola & m_val & m_dist & m_pos
+    m_rr = (table["R:R Rencana"] >= f_rr - 1e-9) | (
+        table["R:R Rencana"].isna() & (table["Status"] == "Gagal")) | (f_rr <= 0)
+    keep = m_status & m_pola & m_val & m_dist & m_pos & m_rr
 
     hid = []
     rest = ~keep
@@ -1036,7 +1051,8 @@ with tab_scr:
                    ("pola/arah", m_pola),
                    (f"value di bawah {f_val:g} M", m_val),
                    (f"jarak PRZ lebih dari {f_dist:g}%", m_dist),
-                   ("posisi/tembus PRZ", m_pos)]:
+                   ("posisi/tembus PRZ", m_pos),
+                   (f"R:R di bawah {f_rr:g}×", m_rr)]:
         cnt = int((rest & ~m).sum())
         if cnt:
             hid.append(f"{cnt} {lab}")
@@ -1135,6 +1151,7 @@ with tab_scr:
     <b style="color:{COL['green']}">{p['tp2']:,.0f}</b></div>
   <div class="r">Risiko <b style="color:{COL['red']}">{pct(p['to_sl']) if risk_ok else '-'}</b>
     · Potensi <b style="color:{COL['green']}">{pot1}</b> / <b style="color:{COL['green']}">{pot2}</b></div>
+  {f'<div class="q">Antri beli di <b>{p["entry"]:,.0f}</b> · R:R ke TP2 <b>{p["rr"]:.1f}×</b></div>' if p["status"] == "Menuju PRZ" and pd.notna(p["rr"]) else ''}
   {f'<div class="n">{p["catatan"]}</div>' if p["catatan"] else ''}
 </div>""", unsafe_allow_html=True)
             if st.button(f"Buka grafik {row['Kode']} ›", key=f"open_{row['_id']}",
@@ -1147,7 +1164,7 @@ with tab_scr:
             styled, hide_index=True, width="stretch", height=min(520, 38 + 35 * len(show)),
             on_select="rerun", selection_mode="single-row", key=fkey,
             column_order=["Kode", "Pola", "Arah", "Status", "Posisi vs PRZ", "Tembus Terdalam %",
-                          "Catatan", "Harga", "Jarak PRZ %",
+                          "R:R Rencana", "Catatan", "Harga", "Jarak PRZ %",
                           "PRZ Bawah", "PRZ Atas", "Entry D", "SL", "SL Efektif", "Jarak ke SL %",
                           "TP1", "TP2", "R:R TP2", "R:R Skrg TP1", "R:R Skrg TP2",
                           "Ke SL %", "Ke TP2 %", "B/XA", "C/AB", "Umur C", "D Terkunci", "Value Min 20H (M)"],
@@ -1155,7 +1172,7 @@ with tab_scr:
                 "Harga": num0, "PRZ Bawah": num0, "PRZ Atas": num0, "Entry D": num0,
                 "SL": num0, "SL Efektif": num0, "Jarak ke SL %": num2,
                 "TP1": num0, "TP2": num0, "Jarak PRZ %": num2, "R:R TP2": num2,
-                "R:R Skrg TP1": num2, "R:R Skrg TP2": num2, "Ke SL %": num2, "Ke TP2 %": num2,
+                "R:R Skrg TP1": num2, "R:R Skrg TP2": num2, "R:R Rencana": num2, "Ke SL %": num2, "Ke TP2 %": num2,
                 "Tembus Terdalam %": st.column_config.NumberColumn(format="%.1f"),
                 "B/XA": num3, "C/AB": num3,
                 "Value Min 20H (M)": st.column_config.NumberColumn(format="%.1f"),
