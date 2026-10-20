@@ -53,7 +53,7 @@ C_RANGE = (0.382, 0.886)            # C terhadap AB (semua pola)
 BC_EXT = (1.618, 2.0, 2.24, 2.618)  # kandidat ekstensi BC untuk konfluensi PRZ
 TP_RATIOS = (0.382, 0.618)          # TP1, TP2 = retracement AD
 
-STATUS_ORDER = {"Di PRZ": 0, "Menuju PRZ": 1, "Gagal": 2}
+STATUS_ORDER = {"Di PRZ": 0, "Menuju PRZ": 1, "Selesai": 2, "Gagal": 3}
 C_LOOKBACK = 8   # titik C dicari sampai 8 swing terkunci ke belakang
 X_LOOKBACK = 4   # titik X dicari sampai 4 kandidat (swing sejenis) ke belakang
 
@@ -306,9 +306,24 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
         reach_top = max(z["top"] for z in zones)
 
         d_locked = (ci == len(piv) - 2)
-        if chk_min < sl_eff:
+
+        # Urutan kejadian setelah C: sentuh PRZ -> (TP tercapai?) -> (SL jebol?)
+        hi_or = (h if s == 1 else -l)[C[0] + 1:]
+        t_prz = np.where(path <= reach_top)[0]
+        t_sl = np.where(chk < sl_eff)[0]
+        t_sl = int(t_sl[0]) if len(t_sl) else None
+        tp_hit, t_tp = None, None
+        if len(t_prz):
+            after = hi_or[t_prz[0]:]
+            i1 = np.where(after >= tp1)[0]
+            if len(i1):
+                t_tp = int(t_prz[0] + i1[0])
+                tp_hit = "TP2" if (after >= tp2).any() else "TP1"
+        if t_tp is not None and (t_sl is None or t_tp < t_sl):
+            status = "Selesai"          # pola sudah berhasil mencapai target
+        elif t_sl is not None:
             status = "Gagal"
-        elif pmin <= reach_top:
+        elif len(t_prz):
             status = "Di PRZ"
         else:
             status = "Menuju PRZ"
@@ -325,6 +340,21 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
                 edge = z["top"] if cur > z["top"] else z["bot"]
                 dists.append(abs(cur - edge) / abs(cur) * 100)
         dist = np.nan if status == "Gagal" else min(dists)
+        # Posisi harga sekarang terhadap seluruh zona PRZ, dan tembusan terdalam sejak C
+        z_top = max(z["top"] for z in zones)
+        z_bot = min(z["bot"] for z in zones)
+        if cur > z_top:      # sisi asal (belum masuk / sudah memantul keluar)
+            posisi = "Di atas PRZ" if s == 1 else "Di bawah PRZ"
+        elif cur >= z_bot:
+            posisi = "Di dalam PRZ"
+        else:                # sisi jauh (menembus zona)
+            posisi = "Di bawah PRZ" if s == 1 else "Di atas PRZ"
+        tembus = max(0.0, (z_bot - pmin) / abs(z_bot) * 100)
+        catatan = ""
+        if status == "Selesai":
+            catatan = f"{tp_hit} sudah tercapai"
+            if dist <= 5:
+                catatan += ", kini kembali ke PRZ" if dist == 0 else ", kini mendekati PRZ lagi"
         rr = (tp2 - entry) / (entry - sl_eff) if entry > sl_eff else np.nan
         # Dari harga sekarang (ruang terorientasi): risiko ke SL efektif, potensi ke TP1/TP2
         risk_now = cur - sl_eff
@@ -352,7 +382,7 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
             entry=real(entry), sl=real(sl), sl_eff=real(sl_eff), tp1=real(tp1), tp2=real(tp2),
             jebol=jebol, stop_basis=stop_basis, buf_atr=buf_atr,
             rr=rr, dist=dist, age=age, price=float(c[-1]), touch_idx=touch_idx,
-            rr_now1=rr_now1, rr_now2=rr_now2, to_sl=to_sl, to_tp1=to_tp1, to_tp2=to_tp2,
+            tp_hit=tp_hit, catatan=catatan, posisi=posisi, tembus=tembus, rr_now1=rr_now1, rr_now2=rr_now2, to_sl=to_sl, to_tp1=to_tp1, to_tp2=to_tp2,
             pivots=piv, tent=tent,
         ))
     return out
@@ -483,7 +513,8 @@ def run_scan(codes, atr_len, mult, max_age, stop_basis="Low intraday", buf_atr=0
                 "Jarak ke SL %": p["jebol"], "TP1": p["tp1"], "TP2": p["tp2"],
                 "R:R TP2": p["rr"], "R:R Skrg TP1": p["rr_now1"], "R:R Skrg TP2": p["rr_now2"],
                 "Ke SL %": p["to_sl"], "Ke TP2 %": p["to_tp2"], "B/XA": p["b_ratio"], "C/AB": p["c_ratio"],
-                "Umur C": p["age"], "D Terkunci": "Ya" if p["d_locked"] else "-",
+                "Catatan": p["catatan"], "Posisi vs PRZ": p["posisi"],
+                "Tembus Terdalam %": p["tembus"], "Umur C": p["age"], "D Terkunci": "Ya" if p["d_locked"] else "-",
                 "Value Min 20H (M)": val_min,
             })
     return pd.DataFrame(rows), detail, len(data), stats
@@ -719,7 +750,15 @@ section[data-testid="stSidebar"] {{ background:#080b10; border-right:1px solid #
 .hb-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:12px; }}
 .hb-grid.six {{ grid-template-columns:repeat(6,1fr); }}
 .hb-grid.eight {{ grid-template-columns:repeat(4,1fr); }}
+.hb-grid.five {{ grid-template-columns:repeat(5,1fr); }}
 .hb-lad {{ margin:4px 0 8px 0; }}
+.hb-mc {{ background:{COL['panel']}; border:1px solid #1a2430; padding:12px 14px 10px 14px;
+  margin:10px 0 4px 0; font-size:16px; line-height:1.55; color:{COL['text']}; }}
+.hb-mc .t {{ font-size:18px; margin-bottom:4px; }}
+.hb-mc .t .k {{ font-weight:800; color:#ffffff; font-size:20px; }}
+.hb-mc .t .b {{ float:right; font-size:12px; font-weight:800; border:1px solid; padding:2px 8px;
+  letter-spacing:1px; }}
+.hb-mc .n {{ color:{COL['amber']}; font-size:13px; margin-top:4px; }}
 .hb-lad-r {{ display:grid; grid-template-columns:1.6fr 1fr 0.8fr; gap:8px; padding:5px 10px;
   background:{COL['panel']}; margin-bottom:3px; font-size:13px; }}
 .hb-lad-r .v {{ text-align:right; color:{COL['text']}; font-weight:700; }}
@@ -730,7 +769,7 @@ section[data-testid="stSidebar"] {{ background:#080b10; border-right:1px solid #
 .hb-card .k {{ color:{COL['dim']}; font-size:11px; letter-spacing:1px; }}
 .hb-card .v {{ font-size:22px; font-weight:800; }}
 @media (max-width: 640px) {{
-  .hb-grid, .hb-grid.six, .hb-grid.eight {{ grid-template-columns:repeat(2,1fr); }}
+  .hb-grid, .hb-grid.six, .hb-grid.eight, .hb-grid.five {{ grid-template-columns:repeat(2,1fr); }}
   .hb-card .v {{ font-size:18px; }} .hb-title {{ font-size:20px; }} }}
 .hb-fn {{ margin:6px 0; }}
 .hb-fn-l {{ color:{COL['dim']}; font-size:12px; margin-bottom:2px; }}
@@ -764,7 +803,8 @@ def cards_html(items, cls=""):
         for k, v, c in items) + "</div>"
 
 
-STATUS_COL = {"Di PRZ": COL["violet"], "Menuju PRZ": COL["cyan"], "Gagal": COL["red"]}
+STATUS_COL = {"Di PRZ": COL["violet"], "Menuju PRZ": COL["cyan"], "Selesai": COL["amber"],
+              "Gagal": COL["red"]}
 
 
 def ladder_html(p):
@@ -814,8 +854,11 @@ def render_detail(code, df, p, scale_txt="", key=""):
         ("TP1 · 0.382 AD", f"{p['tp1']:,.0f}", COL["green"]),
         ("TP2 · 0.618 AD", f"{p['tp2']:,.0f}", COL["green"]),
         ("R:R DARI ENTRY D · TP2", f2(p["rr"]), COL["text"]),
-        ("R:R DARI HARGA SKRG · TP1 / TP2", f"{f2(p['rr_now1'])} / {f2(p['rr_now2'])}", rr_now_col),
+        ("DARI HARGA SKRG: RISIKO · POTENSI TP1 / TP2",
+         f"{p['to_sl']:+.0f}% · {p['to_tp1']:+.0f}% / {p['to_tp2']:+.0f}%", rr_now_col),
     ], "eight"), unsafe_allow_html=True)
+    st.caption(f"Posisi harga: {p['posisi']} · tembus terdalam melewati PRZ sejak C: "
+               f"{p['tembus']:.1f}%.")
     st.caption(f"Masuk di harga sekarang: risiko {p['to_sl']:+.1f}% ke stop, potensi "
                f"{p['to_tp1']:+.1f}% ke TP1 dan {p['to_tp2']:+.1f}% ke TP2.")
     with st.expander("▌TANGGA LEVEL (posisi harga sekarang)", expanded=compact_mode):
@@ -930,7 +973,15 @@ with st.sidebar:
                             default=qp_list("arah", ["Bullish", "Bearish"], ["Bullish", "Bearish"]))
     ST_OPTS = list(STATUS_ORDER.keys())
     f_status = st.multiselect("Status", ST_OPTS,
-                              default=qp_list("st", ST_OPTS, ["Di PRZ", "Menuju PRZ"]))
+                              default=qp_list("st", ST_OPTS, ["Di PRZ", "Menuju PRZ", "Selesai"]))
+    POS_OPTS = ["Di atas PRZ", "Di dalam PRZ", "Di bawah PRZ"]
+    f_pos = st.multiselect("Posisi harga vs PRZ", POS_OPTS,
+                           default=qp_list("pos", POS_OPTS, POS_OPTS))
+    f_tembus = st.slider("Tembus terdalam maks. (%)", 0.0, 50.0,
+                         min(max(qp_get("tmb", 50.0, float), 0.0), 50.0), 0.5,
+                         help="Seberapa jauh harga pernah menembus sisi jauh PRZ sejak titik C "
+                              "(sisi bawah untuk bullish, sisi atas untuk bearish). "
+                              "0 = hanya pola yang belum pernah menembus PRZ.")
     f_dist = st.slider("Jarak maks. ke PRZ (%)", 0.0, 50.0,
                        min(max(qp_get("dist", 15.0, float), 0.0), 50.0), 0.5)
     f_val = st.number_input("Value transaksi minimum harian 20H (miliar)", 0.0, 1000.0,
@@ -946,6 +997,7 @@ try:
         "m": f"{mult:g}", "age": str(int(max_age)), "sb": stop_basis, "buf": f"{buf_atr:g}",
         "pola": ",".join(f_pola), "arah": ",".join(f_arah), "st": ",".join(f_status),
         "dist": f"{f_dist:g}", "val": f"{f_val:g}",
+        "pos": ",".join(f_pos), "tmb": f"{f_tembus:g}",
     })
 except Exception:
     pass
@@ -965,7 +1017,8 @@ with tab_scr:
         table = pd.DataFrame(columns=["_id", "Kode", "Pola", "Arah", "Status", "Harga",
                                       "Jarak PRZ %", "PRZ Bawah", "PRZ Atas", "Entry D", "SL",
                                       "SL Efektif", "Jarak ke SL %", "TP1", "TP2", "R:R TP2", "R:R Skrg TP1", "R:R Skrg TP2",
-                                      "Ke SL %", "Ke TP2 %", "B/XA", "C/AB", "Umur C",
+                                      "Catatan", "Posisi vs PRZ", "Tembus Terdalam %", "Ke SL %", "Ke TP2 %",
+                                      "B/XA", "C/AB", "Umur C",
                                       "D Terkunci", "Value Min 20H (M)"])
 
     # Saring bertahap supaya alasan tiap baris tersembunyi bisa dihitung
@@ -973,7 +1026,8 @@ with tab_scr:
     m_pola = table["Pola"].isin(f_pola) & table["Arah"].isin(f_arah)
     m_val = table["Value Min 20H (M)"] >= f_val
     m_dist = (table["Jarak PRZ %"] <= f_dist) | table["Jarak PRZ %"].isna()
-    keep = m_status & m_pola & m_val & m_dist
+    m_pos = table["Posisi vs PRZ"].isin(f_pos) & (table["Tembus Terdalam %"] <= f_tembus + 1e-9)
+    keep = m_status & m_pola & m_val & m_dist & m_pos
 
     hid = []
     rest = ~keep
@@ -981,7 +1035,8 @@ with tab_scr:
                     m_status),
                    ("pola/arah", m_pola),
                    (f"value di bawah {f_val:g} M", m_val),
-                   (f"jarak PRZ lebih dari {f_dist:g}%", m_dist)]:
+                   (f"jarak PRZ lebih dari {f_dist:g}%", m_dist),
+                   ("posisi/tembus PRZ", m_pos)]:
         cnt = int((rest & ~m).sum())
         if cnt:
             hid.append(f"{cnt} {lab}")
@@ -996,8 +1051,9 @@ with tab_scr:
         ("SAHAM TERMUAT", n_loaded, COL["text"]),
         ("DI PRZ", int((view["Status"] == "Di PRZ").sum()), COL["violet"]),
         ("MENUJU PRZ", int((view["Status"] == "Menuju PRZ").sum()), COL["cyan"]),
+        ("SELESAI", int((view["Status"] == "Selesai").sum()), COL["amber"]),
         ("GAGAL", int((view["Status"] == "Gagal").sum()), COL["red"]),
-    ]), unsafe_allow_html=True)
+    ], "five"), unsafe_allow_html=True)
     skala_txt = (f"skala {scale_name.split(' ')[0]} {mult:g}×ATR" if scale_name != "Kustom"
                  else f"skala kustom {mult:g}×ATR")
     stop_txt = f"stop {stop_basis.lower()}" + (f" +{buf_atr:g}ATR" if buf_atr > 0 else "")
@@ -1007,26 +1063,27 @@ with tab_scr:
     st.markdown(f'<div class="hb-sub" style="margin:-4px 0 10px 0">{rincian}</div>',
                 unsafe_allow_html=True)
 
-    with st.expander("▌CORONG SARINGAN: kenapa polanya sedikit?"):
-        steps = [
-            ("Jendela 4 swing terakhir yang dicek", stats.get("jendela", 0)),
-            ("Lolos C = 0.382–0.886 AB", stats.get("lolos_c", 0)),
-            ("Lolos B sesuai salah satu pola", stats.get("lolos_b", 0)),
-            (f"Titik C belum lewat {int(max_age)} hari", stats.get("lolos_umur", 0)),
-            ("Pola aktif (D belum batal)", stats.get("aktif", 0)),
-        ]
-        top = max(1, steps[0][1])
-        bars = ""
-        for lab, v in steps:
-            w = max(1.5, v / top * 100)
-            bars += (f'<div class="hb-fn"><div class="hb-fn-l">{lab}</div>'
-                     f'<div class="hb-fn-t"><div class="hb-fn-b" style="width:{w:.1f}%"></div>'
-                     f'<span>{v}</span></div></div>')
-        st.markdown(bars, unsafe_allow_html=True)
-        st.caption("Tiap saham dicek di 2 posisi: titik C = swing terkunci terakhir (D sedang "
-                   "berjalan) atau sebelum terakhir (D sudah terkunci). Penyaring terberat "
-                   "biasanya rasio B: saat pasar tren kuat, B sering menembus X sehingga bukan "
-                   "pola harmonic. Coba skala swing Menengah/Besar untuk pola yang lebih lebar.")
+    if not compact_mode:
+      with st.expander("▌CORONG SARINGAN: kenapa polanya sedikit?"):
+            steps = [
+                ("Jendela 4 swing terakhir yang dicek", stats.get("jendela", 0)),
+                ("Lolos C = 0.382–0.886 AB", stats.get("lolos_c", 0)),
+                ("Lolos B sesuai salah satu pola", stats.get("lolos_b", 0)),
+                (f"Titik C belum lewat {int(max_age)} hari", stats.get("lolos_umur", 0)),
+                ("Pola aktif (D belum batal)", stats.get("aktif", 0)),
+            ]
+            top = max(1, steps[0][1])
+            bars = ""
+            for lab, v in steps:
+                w = max(1.5, v / top * 100)
+                bars += (f'<div class="hb-fn"><div class="hb-fn-l">{lab}</div>'
+                         f'<div class="hb-fn-t"><div class="hb-fn-b" style="width:{w:.1f}%"></div>'
+                         f'<span>{v}</span></div></div>')
+            st.markdown(bars, unsafe_allow_html=True)
+            st.caption("Tiap saham dicek di 2 posisi: titik C = swing terkunci terakhir (D sedang "
+                       "berjalan) atau sebelum terakhir (D sudah terkunci). Penyaring terberat "
+                       "biasanya rasio B: saat pasar tren kuat, B sering menembus X sehingga bukan "
+                       "pola harmonic. Coba skala swing Menengah/Besar untuk pola yang lebih lebar.")
 
     ids = view["_id"].tolist()
     show = view.drop(columns="_id")
@@ -1056,13 +1113,41 @@ with tab_scr:
             st.info(f"Ada {len(table)} pola terdeteksi ({rinci}), tapi semuanya tersembunyi oleh "
                     "filter. Buka sidebar (tombol » di kiri atas) lalu longgarkan filter Status, "
                     "Pola, jarak PRZ, atau value transaksi.")
+    elif compact_mode:
+        # ---- Mode HP: daftar kartu, satu saham satu kartu ----
+        def pct(v):
+            return "-" if pd.isna(v) else f"{v:+.0f}%"
+        for i, row in view.iterrows():
+            p = detail[row["_id"]]
+            colr = STATUS_COL.get(p["status"], COL["text"])
+            jarak = "" if pd.isna(p["dist"]) or p["dist"] == 0 else f" {p['dist']:.0f}%"
+            pos = p["posisi"].replace("Di ", "di ") + jarak
+            risk_ok = pd.notna(p["to_sl"]) and p["to_sl"] < 0
+            pot1 = pct(p["to_tp1"]) if p["to_tp1"] > 0 else "-"
+            pot2 = pct(p["to_tp2"]) if p["to_tp2"] > 0 else "-"
+            st.markdown(f"""
+<div class="hb-mc" style="border-left:4px solid {colr}">
+  <div class="t"><span class="k">{row['Kode']}</span> · {p['pattern']}
+    <span class="b" style="color:{colr};border-color:{colr}">{p['status'].upper()}</span></div>
+  <div class="r">Harga <b>{p['price']:,.0f}</b> · {pos}</div>
+  <div class="r">SL <b style="color:{COL['red']}">{p['sl_eff']:,.0f}</b> · TP
+    <b style="color:{COL['green']}">{p['tp1']:,.0f}</b> /
+    <b style="color:{COL['green']}">{p['tp2']:,.0f}</b></div>
+  <div class="r">Risiko <b style="color:{COL['red']}">{pct(p['to_sl']) if risk_ok else '-'}</b>
+    · Potensi <b style="color:{COL['green']}">{pot1}</b> / <b style="color:{COL['green']}">{pot2}</b></div>
+  {f'<div class="n">{p["catatan"]}</div>' if p["catatan"] else ''}
+</div>""", unsafe_allow_html=True)
+            if st.button(f"Buka grafik {row['Kode']} ›", key=f"open_{row['_id']}",
+                         width="stretch"):
+                st.session_state["_open_card"] = row["_id"]
     else:
         styled = show.style.map(color_status, subset=["Status"]).map(color_arah, subset=["Arah"])
         st.caption("Klik baris untuk membuka grafik pola.")
         event = st.dataframe(
             styled, hide_index=True, width="stretch", height=min(520, 38 + 35 * len(show)),
             on_select="rerun", selection_mode="single-row", key=fkey,
-            column_order=["Kode", "Pola", "Arah", "Status", "Harga", "Jarak PRZ %",
+            column_order=["Kode", "Pola", "Arah", "Status", "Posisi vs PRZ", "Tembus Terdalam %",
+                          "Catatan", "Harga", "Jarak PRZ %",
                           "PRZ Bawah", "PRZ Atas", "Entry D", "SL", "SL Efektif", "Jarak ke SL %",
                           "TP1", "TP2", "R:R TP2", "R:R Skrg TP1", "R:R Skrg TP2",
                           "Ke SL %", "Ke TP2 %", "B/XA", "C/AB", "Umur C", "D Terkunci", "Value Min 20H (M)"],
@@ -1071,6 +1156,7 @@ with tab_scr:
                 "SL": num0, "SL Efektif": num0, "Jarak ke SL %": num2,
                 "TP1": num0, "TP2": num0, "Jarak PRZ %": num2, "R:R TP2": num2,
                 "R:R Skrg TP1": num2, "R:R Skrg TP2": num2, "Ke SL %": num2, "Ke TP2 %": num2,
+                "Tembus Terdalam %": st.column_config.NumberColumn(format="%.1f"),
                 "B/XA": num3, "C/AB": num3,
                 "Value Min 20H (M)": st.column_config.NumberColumn(format="%.1f"),
             },
@@ -1084,7 +1170,10 @@ with tab_scr:
         render_detail(code, df, p, f"{mult:g}×ATR", key=rid)
 
     rows_sel = event.selection.rows if event is not None and hasattr(event, "selection") else []
-    if rows_sel:
+    card_rid = st.session_state.pop("_open_card", None)
+    if card_rid and card_rid in detail:
+        show_detail(card_rid)
+    elif rows_sel:
         rid = ids[rows_sel[0]]
         if st.session_state.get("_open") != rid:
             st.session_state["_open"] = rid
@@ -1092,10 +1181,11 @@ with tab_scr:
     else:
         st.session_state["_open"] = None
 
-    st.caption(f"Aturan stop: basis {stop_basis.lower()}, buffer {buf_atr:g}×ATR. "
+    if not compact_mode:
+      st.caption(f"Aturan stop: basis {stop_basis.lower()}, buffer {buf_atr:g}×ATR. "
                "Kolom 'Jarak ke SL %' = posisi terendah harga (low/close sesuai basis) sejak C "
                "terhadap SL pola; negatif berarti sudah pernah tembus.")
-    st.caption("Data: Yahoo Finance (harian, 2 tahun). Swing terakhir ZigZag selalu sementara "
+      st.caption("Data: Yahoo Finance (harian, 2 tahun). Swing terakhir ZigZag selalu sementara "
                "sampai harga berbalik ≥ k×ATR; status dihitung ulang tiap pindai.")
 
 # =============================================================================
