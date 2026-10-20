@@ -204,7 +204,8 @@ def build_zone(a, xa, c, bc_len, r):
                 top=max(xa_lvl, best_lvl), bot=min(xa_lvl, best_lvl))
 
 
-def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None):
+def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
+                    stop_basis="Low intraday", buf_atr=0.0):
     if stats is None:
         stats = {}
     for k in ("jendela", "lolos_c", "lolos_b", "lolos_umur", "aktif"):
@@ -256,12 +257,17 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None):
         if len(path) == 0:
             continue
         pmin = float(path.min())
+        # Stop: basis low/high intraday atau close harian, dikurangi buffer x ATR (ATR saat C)
+        atr_c = float(atr[C[0]]) if not np.isnan(atr[C[0]]) else float(np.nanmean(atr))
+        sl_eff = sl - buf_atr * atr_c
+        chk = (s * c[C[0] + 1:]) if stop_basis == "Close harian" else path
+        chk_min = float(chk.min())
         hit = np.where(path <= entry)[0]
         touch_idx = int(C[0] + 1 + hit[0]) if len(hit) else None
         reach_top = max(z["top"] for z in zones)
 
         d_locked = (ci == len(piv) - 2)
-        if pmin < sl:
+        if chk_min < sl_eff:
             status = "Gagal"
         elif pmin <= reach_top:
             status = "Di PRZ"
@@ -280,7 +286,8 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None):
                 edge = z["top"] if cur > z["top"] else z["bot"]
                 dists.append(abs(cur - edge) / abs(cur) * 100)
         dist = np.nan if status == "Gagal" else min(dists)
-        rr = (tp2 - entry) / (entry - sl) if entry > sl else np.nan
+        rr = (tp2 - entry) / (entry - sl_eff) if entry > sl_eff else np.nan
+        jebol = (chk_min - sl) / abs(sl) * 100  # + = belum menyentuh SL pola
 
         def real(v):
             return s * v
@@ -296,7 +303,8 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None):
             pattern=name, arah="Bullish" if s == 1 else "Bearish", status=status,
             X=X, A=A, B=B, C=C, D=piv[-1] if d_locked else None, d_locked=d_locked,
             b_ratio=br, c_ratio=cr, zones=rz,
-            entry=real(entry), sl=real(sl), tp1=real(tp1), tp2=real(tp2),
+            entry=real(entry), sl=real(sl), sl_eff=real(sl_eff), tp1=real(tp1), tp2=real(tp2),
+            jebol=jebol, stop_basis=stop_basis, buf_atr=buf_atr,
             rr=rr, dist=dist, age=age, price=float(c[-1]), touch_idx=touch_idx,
             pivots=piv, tent=tent,
         ))
@@ -405,13 +413,13 @@ def load_one(code, period="3y"):
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
-def run_scan(codes, atr_len, mult, max_age):
+def run_scan(codes, atr_len, mult, max_age, stop_basis="Low intraday", buf_atr=0.0):
     data = load_data(codes)
     rows, detail = [], {}
     stats = {}
     for t, df in data.items():
         try:
-            pats = detect_patterns(df, atr_len, mult, max_age, stats)
+            pats = detect_patterns(df, atr_len, mult, max_age, stats, stop_basis, buf_atr)
         except Exception:
             continue
         val_min = float((df["Close"] * df["Volume"]).tail(20).min()) / 1e9
@@ -423,7 +431,8 @@ def run_scan(codes, atr_len, mult, max_age):
                 "_id": rid, "Kode": t, "Pola": p["pattern"], "Arah": p["arah"],
                 "Status": p["status"], "Harga": p["price"],
                 "Jarak PRZ %": p["dist"], "PRZ Bawah": z0["lo"], "PRZ Atas": z0["hi"],
-                "Entry D": p["entry"], "SL": p["sl"], "TP1": p["tp1"], "TP2": p["tp2"],
+                "Entry D": p["entry"], "SL": p["sl"], "SL Efektif": p["sl_eff"],
+                "Jarak ke SL %": p["jebol"], "TP1": p["tp1"], "TP2": p["tp2"],
                 "R:R TP2": p["rr"], "B/XA": p["b_ratio"], "C/AB": p["c_ratio"],
                 "Umur C": p["age"], "D Terkunci": "Ya" if p["d_locked"] else "-",
                 "Value Min 20H (M)": val_min,
@@ -552,8 +561,10 @@ def make_chart(code, df, p, scale_txt=""):
                                text=f"({v:,.0f})", font=dict(color=COL["violet"], size=11))
 
     # SL, TP, Invalid
-    lines = [(p["sl"], "STOP", COL["red"]), (p["tp1"], "TP1", COL["green"]),
+    lines = [(p["sl"], "STOP POLA", COL["red"]), (p["tp1"], "TP1", COL["green"]),
              (p["tp2"], "TP2", COL["green"])]
+    if p.get("buf_atr", 0) > 0:
+        lines.append((p["sl_eff"], f"STOP EFEKTIF +{p['buf_atr']:g}ATR", "#ff8fa3"))
     if p["status"] == "Menuju PRZ":
         lines.append((C[1], "INVALID", COL["amber"]))
     for lvl, lab, colr in lines:
@@ -667,7 +678,9 @@ def render_detail(code, df, p, scale_txt="", key=""):
     st.markdown(cards_html([
         ("STATUS", p["status"], STATUS_COL[p["status"]]),
         ("ENTRY D", f"{p['entry']:,.0f}", COL["violet"]),
-        ("STOP", f"{p['sl']:,.0f}", COL["red"]),
+        (f"STOP · {('close' if p.get('stop_basis') == 'Close harian' else 'low')}"
+         + (f" +{p['buf_atr']:g}ATR" if p.get("buf_atr", 0) > 0 else ""),
+         f"{p['sl_eff']:,.0f}", COL["red"]),
         ("TP1 · 0.382 AD", f"{p['tp1']:,.0f}", COL["green"]),
         ("TP2 · 0.618 AD", f"{p['tp2']:,.0f}", COL["green"]),
         ("R:R TP2 · JARAK", f"{rr} · {dist}", COL["text"]),
@@ -727,6 +740,15 @@ with st.sidebar:
     max_age = st.slider("Umur maks. titik C (hari bursa)", 5, 250,
                         SCALE_AGE.get(scale_name, 40), key=f"age_{scale_name}")
 
+    st.markdown("### ▌ATURAN STOP")
+    stop_basis = st.radio("Basis stop", ["Low intraday", "Close harian"], horizontal=True,
+                          help="Low intraday: pola Gagal begitu ekor candle menembus SL. "
+                               "Close harian: hanya dihitung jebol kalau harga DITUTUP di luar SL.")
+    buf_atr = st.number_input("Buffer di luar SL (× ATR)", 0.0, 3.0, 0.0, 0.25,
+                              help="Toleransi tambahan di luar SL pola. ATR diambil saat titik C. "
+                                   "Contoh 0.5 = pola baru Gagal jika tembus SL lebih dari "
+                                   "setengah ATR.")
+
     run = st.button("▶ PINDAI ULANG", width="stretch")
     if run:
         load_data.clear()
@@ -750,12 +772,12 @@ with tab_scr:
     with st.spinner(f"Menarik data {len(codes)} emiten & menghitung swing... "
                     "(pindai pertama bisa 1-3 menit)"):
         table, detail, n_loaded, stats = run_scan(tuple(codes), int(atr_len), float(mult),
-                                                  int(max_age))
+                                                  int(max_age), stop_basis, float(buf_atr))
 
     if table.empty:
         table = pd.DataFrame(columns=["_id", "Kode", "Pola", "Arah", "Status", "Harga",
                                       "Jarak PRZ %", "PRZ Bawah", "PRZ Atas", "Entry D", "SL",
-                                      "TP1", "TP2", "R:R TP2", "B/XA", "C/AB", "Umur C",
+                                      "SL Efektif", "Jarak ke SL %", "TP1", "TP2", "R:R TP2", "B/XA", "C/AB", "Umur C",
                                       "D Terkunci", "Value Min 20H (M)"])
 
     # Saring bertahap supaya alasan tiap baris tersembunyi bisa dihitung
@@ -829,7 +851,7 @@ with tab_scr:
     num2 = st.column_config.NumberColumn(format="%.2f")
     num3 = st.column_config.NumberColumn(format="%.3f")
     fsig = hash((tuple(f_pola), tuple(f_arah), tuple(f_status), f_dist, f_val, atr_len,
-                 mult, max_age, len(codes)))
+                 mult, max_age, len(codes), stop_basis, buf_atr))
     fkey = f"tbl2_{fsig}"
 
     event = None
@@ -850,11 +872,12 @@ with tab_scr:
             styled, hide_index=True, width="stretch", height=min(520, 38 + 35 * len(show)),
             on_select="rerun", selection_mode="single-row", key=fkey,
             column_order=["Kode", "Pola", "Arah", "Status", "Harga", "Jarak PRZ %",
-                          "PRZ Bawah", "PRZ Atas", "Entry D", "SL", "TP1", "TP2", "R:R TP2",
-                          "B/XA", "C/AB", "Umur C", "D Terkunci", "Value Min 20H (M)"],
+                          "PRZ Bawah", "PRZ Atas", "Entry D", "SL", "SL Efektif", "Jarak ke SL %",
+                          "TP1", "TP2", "R:R TP2", "B/XA", "C/AB", "Umur C", "D Terkunci", "Value Min 20H (M)"],
             column_config={
                 "Harga": num0, "PRZ Bawah": num0, "PRZ Atas": num0, "Entry D": num0,
-                "SL": num0, "TP1": num0, "TP2": num0, "Jarak PRZ %": num2, "R:R TP2": num2,
+                "SL": num0, "SL Efektif": num0, "Jarak ke SL %": num2,
+                "TP1": num0, "TP2": num0, "Jarak PRZ %": num2, "R:R TP2": num2,
                 "B/XA": num3, "C/AB": num3,
                 "Value Min 20H (M)": st.column_config.NumberColumn(format="%.1f"),
             },
@@ -876,6 +899,9 @@ with tab_scr:
     else:
         st.session_state["_open"] = None
 
+    st.caption(f"Aturan stop: basis {stop_basis.lower()}, buffer {buf_atr:g}×ATR. "
+               "Kolom 'Jarak ke SL %' = posisi terendah harga (low/close sesuai basis) sejak C "
+               "terhadap SL pola; negatif berarti sudah pernah tembus.")
     st.caption("Data: Yahoo Finance (harian, 2 tahun). Swing terakhir ZigZag selalu sementara "
                "sampai harga berbalik ≥ k×ATR; status dihitung ulang tiap pindai.")
 
@@ -899,7 +925,8 @@ with tab_emt:
         else:
             res = {}
             for nm, m in SCALES.items():
-                pats = detect_patterns(df1, int(atr_len), m, max_age=10_000)
+                pats = detect_patterns(df1, int(atr_len), m, max_age=10_000,
+                                       stop_basis=stop_basis, buf_atr=float(buf_atr))
                 res[nm] = (m, pats)
             last = df1["Close"].iloc[-1]
             chg = (last / df1["Close"].iloc[-2] - 1) * 100
