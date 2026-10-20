@@ -54,6 +54,8 @@ BC_EXT = (1.618, 2.0, 2.24, 2.618)  # kandidat ekstensi BC untuk konfluensi PRZ
 TP_RATIOS = (0.382, 0.618)          # TP1, TP2 = retracement AD
 
 STATUS_ORDER = {"Di PRZ": 0, "Menuju PRZ": 1, "Gagal": 2}
+C_LOOKBACK = 8   # titik C dicari sampai 8 swing terkunci ke belakang
+X_LOOKBACK = 4   # titik X dicari sampai 4 kandidat (swing sejenis) ke belakang
 
 SCALES = {"Kecil (1.5×ATR)": 1.5, "Menengah (3×ATR)": 3.0, "Besar (5×ATR)": 5.0}
 SCALE_AGE = {"Kecil (1.5×ATR)": 40, "Menengah (3×ATR)": 80, "Besar (5×ATR)": 150}
@@ -204,6 +206,27 @@ def build_zone(a, xa, c, bc_len, r):
                 top=max(xa_lvl, best_lvl), bot=min(xa_lvl, best_lvl))
 
 
+def pick_x(piv, ai, s):
+    """
+    Titik X = awal kaki XA yang 'bersih'. Kaki XA boleh punya pantulan di tengah:
+    X dicari sampai X_LOOKBACK kandidat ke belakang (swing sejenis), dan dipilih yang
+    paling ekstrem, dengan syarat tidak ada swing di antara X dan A yang melewati X atau A.
+    """
+    a_or = s * piv[ai][1]
+    best = None
+    for k in range(X_LOOKBACK):
+        xi = ai - 1 - 2 * k
+        if xi < 0:
+            break
+        x_or = s * piv[xi][1]
+        mid = [s * q[1] for q in piv[xi + 1:ai]]
+        if mid and (min(mid) < x_or or max(mid) > a_or):
+            break                      # kaki tidak bersih, kandidat lebih jauh juga gugur
+        if best is None or x_or < s * best[1]:
+            best = piv[xi]
+    return best
+
+
 def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
                     stop_basis="Low intraday", buf_atr=0.0):
     if stats is None:
@@ -218,16 +241,29 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
     piv, tent = zigzag_atr(h, l, atr, mult)
     out = []
 
-    # C = swing terkunci terakhir (D sedang berjalan) atau sebelum terakhir (D sudah terkunci)
-    for ci in (len(piv) - 1, len(piv) - 2):
+    # Kandidat titik C:
+    #  - swing terkunci terakhir            -> D sedang berjalan
+    #  - swing sebelum terakhir             -> D sudah terkunci (swing terakhir)
+    #  - sampai C_LOOKBACK swing ke belakang -> D masih berjalan, kaki CD boleh punya
+    #    pantulan di tengah, asal harga belum pernah menembus C (garis Invalid)
+    for ci in range(len(piv) - 1, max(2, len(piv) - 1 - C_LOOKBACK), -1):
         if ci < 3:
             continue
-        X, A, B, C = piv[ci - 3:ci + 1]
-        s = 1 if X[2] == "L" else -1          # 1 = bullish (D = titik beli), -1 = bearish
+        A, B, C = piv[ci - 2:ci + 1]
+        s = 1 if A[2] == "H" else -1          # 1 = bullish (D = titik beli), -1 = bearish
+        X = pick_x(piv, ci - 2, s)
+        if X is None:
+            continue
         x, a, b, cc = s * X[1], s * A[1], s * B[1], s * C[1]
         xa, ab = a - x, a - b
         if xa <= 0 or ab <= 0:
             continue
+        lookback = ci < len(piv) - 2
+        if lookback:
+            # Invalid: sisi berlawanan dari kaki CD tidak boleh melewati C
+            opp = (h if s == 1 else -l)[C[0] + 1:]
+            if len(opp) == 0 or float(opp.max()) > cc:
+                continue
         stats["jendela"] += 1
         br = ab / xa
         cr = (cc - b) / ab
@@ -252,6 +288,9 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
         tp1 = entry + TP_RATIOS[0] * (a - entry)
         tp2 = entry + TP_RATIOS[1] * (a - entry)
 
+        # Penjaga kewajaran: proyeksi bullish yang jatuh ke harga nol/negatif tidak masuk akal
+        if s == 1 and (sl <= 0 or min(z["bot"] for z in zones) <= 0):
+            continue
         low_or = l if s == 1 else -h            # sisi "menuju D" dalam ruang terorientasi
         path = low_or[C[0] + 1:]
         if len(path) == 0:
@@ -319,8 +358,9 @@ def diagnose(piv):
     for ci, tag in ((len(piv) - 1, "Skenario D berjalan"), (len(piv) - 2, "Skenario D terkunci")):
         if ci < 3:
             continue
-        X, A, B, C = piv[ci - 3:ci + 1]
-        s = 1 if X[2] == "L" else -1
+        A, B, C = piv[ci - 2:ci + 1]
+        s = 1 if A[2] == "H" else -1
+        X = pick_x(piv, ci - 2, s) or piv[ci - 3]
         x, a, b, cc = s * X[1], s * A[1], s * B[1], s * C[1]
         xa, ab = a - x, a - b
         arah = "bullish" if s == 1 else "bearish"
