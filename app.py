@@ -914,7 +914,7 @@ def qp_list(key, options, default):
     return vals
 
 
-SCALE_OPTS = list(SCALES.keys()) + ["Kustom"]
+SCALE_OPTS = list(SCALES.keys())
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
@@ -942,10 +942,7 @@ with st.sidebar:
     sk = qp_get("sk", SCALE_OPTS[0])
     scale_name = st.selectbox("Skala swing (screener)", SCALE_OPTS,
                               index=SCALE_OPTS.index(sk) if sk in SCALE_OPTS else 0)
-    if scale_name == "Kustom":
-        mult = st.number_input("Kunci swing (x ATR)", 0.5, 10.0, qp_get("m", 1.5, float), 0.1)
-    else:
-        mult = SCALES[scale_name]
+    mult = SCALES[scale_name]
     age_def = qp_get("age", SCALE_AGE.get(scale_name, 40), int) if sk == scale_name \
         else SCALE_AGE.get(scale_name, 40)
     max_age = st.slider("Umur maks. titik C (hari bursa)", 5, 250, min(max(age_def, 5), 250),
@@ -953,9 +950,9 @@ with st.sidebar:
 
     st.markdown("### ▌ATURAN STOP")
     STOP_OPTS = ["Low intraday", "Close harian"]
-    sb = qp_get("sb", STOP_OPTS[0])
+    sb = qp_get("sb", "Close harian")
     stop_basis = st.radio("Basis stop", STOP_OPTS, horizontal=True,
-                          index=STOP_OPTS.index(sb) if sb in STOP_OPTS else 0,
+                          index=STOP_OPTS.index(sb) if sb in STOP_OPTS else 1,
                           help="Low intraday: pola Gagal begitu ekor candle menembus SL. "
                                "Close harian: hanya dihitung jebol kalau harga DITUTUP di luar SL.")
     buf_atr = st.number_input("Buffer di luar SL (× ATR)", 0.0, 1.0,
@@ -998,7 +995,7 @@ with st.sidebar:
     f_dist = st.slider("Jarak maks. ke PRZ (%)", 0.0, 50.0,
                        min(max(qp_get("dist", 15.0, float), 0.0), 50.0), 0.5)
     f_val = st.number_input("Value transaksi minimum harian 20H (miliar)", 0.0, 1000.0,
-                            qp_get("val", 5.0, float), 1.0)
+                            qp_get("val", 1.0, float), 1.0)
 
     st.caption("Pengaturan ikut tersimpan di alamat (URL) halaman. Bookmark halaman ini supaya "
                "saat dibuka lagi pengaturannya sama.")
@@ -1070,8 +1067,7 @@ with tab_scr:
         ("SELESAI", int((view["Status"] == "Selesai").sum()), COL["amber"]),
         ("GAGAL", int((view["Status"] == "Gagal").sum()), COL["red"]),
     ], "five"), unsafe_allow_html=True)
-    skala_txt = (f"skala {scale_name.split(' ')[0]} {mult:g}×ATR" if scale_name != "Kustom"
-                 else f"skala kustom {mult:g}×ATR")
+    skala_txt = f"skala {scale_name.split(' ')[0]} {mult:g}×ATR"
     stop_txt = f"stop {stop_basis.lower()}" + (f" +{buf_atr:g}ATR" if buf_atr > 0 else "")
     rincian = (f"{len(table)} pola terdeteksi · {len(view)} tampil · {skala_txt} · {stop_txt}")
     if hid:
