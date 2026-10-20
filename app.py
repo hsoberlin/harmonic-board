@@ -206,6 +206,33 @@ def build_zone(a, xa, c, bc_len, r):
                 top=max(xa_lvl, best_lvl), bot=min(xa_lvl, best_lvl))
 
 
+def idx_tick(price):
+    """Fraksi harga BEI."""
+    p = abs(price)
+    if p < 200:
+        return 1
+    if p < 500:
+        return 2
+    if p < 2000:
+        return 5
+    if p < 5000:
+        return 10
+    return 25
+
+
+def round_tick(price, mode):
+    """Bulatkan ke fraksi BEI. mode 'down' / 'up'."""
+    t = idx_tick(price)
+    q = price / t
+    v = (np.floor(q + 1e-9) if mode == "down" else np.ceil(q - 1e-9)) * t
+    # kalau pembulatan melewati batas rentang fraksi, cek ulang dengan fraksi baru
+    t2 = idx_tick(v)
+    if t2 != t:
+        q = price / t2
+        v = (np.floor(q + 1e-9) if mode == "down" else np.ceil(q - 1e-9)) * t2
+    return float(v)
+
+
 def pick_x(piv, ai, s):
     """
     Titik X = awal kaki XA yang 'bersih'. Kaki XA boleh punya pantulan di tengah:
@@ -350,6 +377,23 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
         else:                # sisi jauh (menembus zona)
             posisi = "Di bawah PRZ" if s == 1 else "Di atas PRZ"
         tembus = max(0.0, (z_bot - pmin) / abs(z_bot) * 100)
+
+        # Keseimbangan waktu: lama kaki CD dibanding AB (hari bursa)
+        ab_bars = int(B[0] - A[0])
+        if d_locked:
+            cd_bars, cd_jalan = int(piv[-1][0] - C[0]), False
+        elif len(t_prz):
+            cd_bars, cd_jalan = int(t_prz[0] + 1), False   # sampai pertama menyentuh PRZ
+        else:
+            cd_bars, cd_jalan = int((n - 1) - C[0]), True
+        if cd_jalan:
+            waktu_lbl = "berjalan"
+            waktu_txt = f"AB {ab_bars} hari · CD berjalan {cd_bars} hari"
+        else:
+            r_t = cd_bars / max(ab_bars, 1)
+            waktu_lbl = ("CD terlalu cepat" if r_t < 0.5 else
+                         "CD terlalu lambat" if r_t > 2 else "seimbang")
+            waktu_txt = f"AB {ab_bars} hari · CD {cd_bars} hari → {waktu_lbl}"
         catatan = ""
         if status == "Selesai":
             catatan = f"{tp_hit} sudah tercapai"
@@ -382,10 +426,36 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
             entry=real(entry), sl=real(sl), sl_eff=real(sl_eff), tp1=real(tp1), tp2=real(tp2),
             jebol=jebol, stop_basis=stop_basis, buf_atr=buf_atr,
             rr=rr, dist=dist, age=age, price=float(c[-1]), touch_idx=touch_idx,
-            tp_hit=tp_hit, catatan=catatan, posisi=posisi, tembus=tembus, rr_now1=rr_now1, rr_now2=rr_now2, to_sl=to_sl, to_tp1=to_tp1, to_tp2=to_tp2,
+            tp_hit=tp_hit, catatan=catatan, posisi=posisi, tembus=tembus,
+            waktu_lbl=waktu_lbl, waktu_txt=waktu_txt, rr_now1=rr_now1, rr_now2=rr_now2, to_sl=to_sl, to_tp1=to_tp1, to_tp2=to_tp2,
             pivots=piv, tent=tent,
         ))
+        apply_ticks(out[-1], s)
     return out
+
+
+def apply_ticks(p, s):
+    """
+    Bulatkan level order ke fraksi BEI supaya bisa langsung dipasang di aplikasi sekuritas.
+    Bullish: entry ke atas (mudah terisi), TP ke bawah (mudah terisi), SL ke bawah (beri ruang).
+    Bearish: kebalikannya. Persentase dan R:R dihitung ulang dari angka yang sudah dibulatkan.
+    """
+    up, dn = ("up", "down") if s == 1 else ("down", "up")
+    p["entry"] = round_tick(p["entry"], up)
+    p["tp1"] = round_tick(p["tp1"], dn)
+    p["tp2"] = round_tick(p["tp2"], dn)
+    p["sl"] = round_tick(p["sl"], dn)
+    p["sl_eff"] = round_tick(p["sl_eff"], dn)
+    cur = p["price"]
+    risk_e = s * (p["entry"] - p["sl_eff"])
+    p["rr"] = s * (p["tp2"] - p["entry"]) / risk_e if risk_e > 0 else np.nan
+    risk_n = s * (cur - p["sl_eff"])
+    r1, r2 = s * (p["tp1"] - cur), s * (p["tp2"] - cur)
+    p["rr_now1"] = r1 / risk_n if risk_n > 0 and r1 > 0 else np.nan
+    p["rr_now2"] = r2 / risk_n if risk_n > 0 and r2 > 0 else np.nan
+    p["to_sl"] = (p["sl_eff"] / cur - 1) * 100
+    p["to_tp1"] = (p["tp1"] / cur - 1) * 100
+    p["to_tp2"] = (p["tp2"] / cur - 1) * 100
 
 
 def diagnose(piv):
@@ -515,7 +585,7 @@ def run_scan(codes, atr_len, mult, max_age, stop_basis="Low intraday", buf_atr=0
                 "R:R Rencana": p["rr"] if p["status"] == "Menuju PRZ" else p["rr_now2"],
                 "R:R Skrg TP1": p["rr_now1"], "R:R Skrg TP2": p["rr_now2"],
                 "Ke SL %": p["to_sl"], "Ke TP2 %": p["to_tp2"], "B/XA": p["b_ratio"], "C/AB": p["c_ratio"],
-                "Catatan": p["catatan"], "Posisi vs PRZ": p["posisi"],
+                "Catatan": p["catatan"], "Waktu": p["waktu_txt"], "Posisi vs PRZ": p["posisi"],
                 "Tembus Terdalam %": p["tembus"], "Umur C": p["age"], "D Terkunci": "Ya" if p["d_locked"] else "-",
                 "Value Min 20H (M)": val_min,
             })
@@ -807,6 +877,8 @@ def cards_html(items, cls=""):
         for k, v, c in items) + "</div>"
 
 
+WAKTU_COL = {"seimbang": COL["green"], "CD terlalu cepat": COL["amber"],
+             "CD terlalu lambat": COL["amber"]}
 STATUS_COL = {"Di PRZ": COL["violet"], "Menuju PRZ": COL["cyan"], "Selesai": COL["amber"],
               "Gagal": COL["red"]}
 
@@ -861,6 +933,7 @@ def render_detail(code, df, p, scale_txt="", key=""):
         ("DARI HARGA SKRG: RISIKO · POTENSI TP1 / TP2",
          f"{p['to_sl']:+.0f}% · {p['to_tp1']:+.0f}% / {p['to_tp2']:+.0f}%", rr_now_col),
     ], "eight"), unsafe_allow_html=True)
+    st.caption(f"Waktu: {p['waktu_txt']}")
     st.caption(f"Posisi harga: {p['posisi']} · tembus terdalam melewati PRZ sejak C: "
                f"{p['tembus']:.1f}%.")
     st.caption(f"Masuk di harga sekarang: risiko {p['to_sl']:+.1f}% ke stop, potensi "
@@ -1027,7 +1100,7 @@ with tab_scr:
         table = pd.DataFrame(columns=["_id", "Kode", "Pola", "Arah", "Status", "Harga",
                                       "Jarak PRZ %", "PRZ Bawah", "PRZ Atas", "Entry D", "SL",
                                       "SL Efektif", "Jarak ke SL %", "TP1", "TP2", "R:R TP2", "R:R Rencana", "R:R Skrg TP1",
-                                      "R:R Skrg TP2", "Catatan", "Posisi vs PRZ", "Tembus Terdalam %", "Ke SL %", "Ke TP2 %",
+                                      "R:R Skrg TP2", "Catatan", "Waktu", "Posisi vs PRZ", "Tembus Terdalam %", "Ke SL %", "Ke TP2 %",
                                       "B/XA", "C/AB", "Umur C",
                                       "D Terkunci", "Value Min 20H (M)"])
 
@@ -1147,6 +1220,7 @@ with tab_scr:
     <b style="color:{COL['green']}">{p['tp2']:,.0f}</b></div>
   <div class="r">Risiko <b style="color:{COL['red']}">{pct(p['to_sl']) if risk_ok else '-'}</b>
     · Potensi <b style="color:{COL['green']}">{pot1}</b> / <b style="color:{COL['green']}">{pot2}</b></div>
+  <div class="r" style="font-size:14px;color:{COL['dim']}">Waktu: {p['waktu_txt'].replace(p['waktu_lbl'], f"<b style='color:{WAKTU_COL.get(p['waktu_lbl'], COL['dim'])}'>{p['waktu_lbl']}</b>") if p['waktu_lbl'] != 'berjalan' else p['waktu_txt']}</div>
   {f'<div class="q">Antri beli di <b>{p["entry"]:,.0f}</b> · R:R ke TP2 <b>{p["rr"]:.1f}×</b></div>' if p["status"] == "Menuju PRZ" and pd.notna(p["rr"]) else ''}
   {f'<div class="n">{p["catatan"]}</div>' if p["catatan"] else ''}
 </div>""", unsafe_allow_html=True)
@@ -1160,7 +1234,7 @@ with tab_scr:
             styled, hide_index=True, width="stretch", height=min(520, 38 + 35 * len(show)),
             on_select="rerun", selection_mode="single-row", key=fkey,
             column_order=["Kode", "Pola", "Arah", "Status", "Posisi vs PRZ", "Tembus Terdalam %",
-                          "R:R Rencana", "Catatan", "Harga", "Jarak PRZ %",
+                          "R:R Rencana", "Catatan", "Waktu", "Harga", "Jarak PRZ %",
                           "PRZ Bawah", "PRZ Atas", "Entry D", "SL", "SL Efektif", "Jarak ke SL %",
                           "TP1", "TP2", "R:R TP2", "R:R Skrg TP1", "R:R Skrg TP2",
                           "Ke SL %", "Ke TP2 %", "B/XA", "C/AB", "Umur C", "D Terkunci", "Value Min 20H (M)"],
