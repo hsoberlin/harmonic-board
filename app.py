@@ -326,6 +326,13 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
                 dists.append(abs(cur - edge) / abs(cur) * 100)
         dist = np.nan if status == "Gagal" else min(dists)
         rr = (tp2 - entry) / (entry - sl_eff) if entry > sl_eff else np.nan
+        # Dari harga sekarang (ruang terorientasi): risiko ke SL efektif, potensi ke TP1/TP2
+        risk_now = cur - sl_eff
+        rr_now1 = (tp1 - cur) / risk_now if risk_now > 0 and tp1 > cur else np.nan
+        rr_now2 = (tp2 - cur) / risk_now if risk_now > 0 and tp2 > cur else np.nan
+        to_sl = -risk_now / abs(cur) * 100
+        to_tp1 = (tp1 - cur) / abs(cur) * 100
+        to_tp2 = (tp2 - cur) / abs(cur) * 100
         jebol = (chk_min - sl) / abs(sl) * 100  # + = belum menyentuh SL pola
 
         def real(v):
@@ -345,6 +352,7 @@ def detect_patterns(df, atr_len=14, mult=1.5, max_age=40, stats=None,
             entry=real(entry), sl=real(sl), sl_eff=real(sl_eff), tp1=real(tp1), tp2=real(tp2),
             jebol=jebol, stop_basis=stop_basis, buf_atr=buf_atr,
             rr=rr, dist=dist, age=age, price=float(c[-1]), touch_idx=touch_idx,
+            rr_now1=rr_now1, rr_now2=rr_now2, to_sl=to_sl, to_tp1=to_tp1, to_tp2=to_tp2,
             pivots=piv, tent=tent,
         ))
     return out
@@ -473,7 +481,8 @@ def run_scan(codes, atr_len, mult, max_age, stop_basis="Low intraday", buf_atr=0
                 "Jarak PRZ %": p["dist"], "PRZ Bawah": z0["lo"], "PRZ Atas": z0["hi"],
                 "Entry D": p["entry"], "SL": p["sl"], "SL Efektif": p["sl_eff"],
                 "Jarak ke SL %": p["jebol"], "TP1": p["tp1"], "TP2": p["tp2"],
-                "R:R TP2": p["rr"], "B/XA": p["b_ratio"], "C/AB": p["c_ratio"],
+                "R:R TP2": p["rr"], "R:R Skrg TP1": p["rr_now1"], "R:R Skrg TP2": p["rr_now2"],
+                "Ke SL %": p["to_sl"], "Ke TP2 %": p["to_tp2"], "B/XA": p["b_ratio"], "C/AB": p["c_ratio"],
                 "Umur C": p["age"], "D Terkunci": "Ya" if p["d_locked"] else "-",
                 "Value Min 20H (M)": val_min,
             })
@@ -490,9 +499,9 @@ COL = dict(bg="#06080b", panel="#0b1016", grid="#141c25", text="#c9d4df",
 FONT = "JetBrains Mono, Consolas, monospace"
 
 
-def _base_layout(fig, df, start, x_end, title, title_color):
+def _base_layout(fig, df, start, x_end, title, title_color, nticks=7):
     xs = np.arange(start, len(df))
-    step = max(1, len(xs) // 7)
+    step = max(1, len(xs) // nticks)
     tv = list(xs[step // 2::step])  # geser dari tepi kiri agar label pertama tidak terpotong
     tt, prev_y = [], None
     for i in tv:
@@ -540,10 +549,10 @@ def _ratio_label(fig, q1, q2, txt, color):
                        font=dict(color=color, size=11), bgcolor="rgba(6,8,11,0.85)")
 
 
-def make_chart(code, df, p, scale_txt=""):
+def make_chart(code, df, p, scale_txt="", compact=False):
     n = len(df)
-    proj = 30
-    start = max(0, p["X"][0] - 30)
+    proj = 20 if compact else 30
+    start = max(0, (p["B"][0] - 10) if compact else (p["X"][0] - 30))
     x1 = n - 1 + proj
     bull = p["arah"] == "Bullish"
     accent = COL["cyan"] if bull else COL["amber"]
@@ -577,26 +586,30 @@ def make_chart(code, df, p, scale_txt=""):
     fig.add_trace(go.Scatter(x=[C[0], D[0]], y=[C[1], D[1]], mode="lines",
                              line=dict(color=accent, width=2, dash=d_dash), hoverinfo="skip"))
     # Garis bantu rasio: XB, AC, BD, XD
-    for q1, q2 in ([X, B], [A, C], [B, D], [X, D]):
+    for q1, q2 in ([] if compact else ([X, B], [A, C], [B, D], [X, D])):
         fig.add_trace(go.Scatter(x=[q1[0], q2[0]], y=[q1[1], q2[1]], mode="lines",
                                  line=dict(color=accent, width=1, dash="dot"), hoverinfo="skip"))
 
     d_price = D[1]
     bd_ext = abs(C[1] - d_price) / abs(C[1] - B[1])
     xd = abs(A[1] - d_price) / abs(A[1] - X[1])
-    _ratio_label(fig, X, B, f"{p['b_ratio']:.3f}", accent)
-    _ratio_label(fig, A, C, f"{p['c_ratio']:.3f}", accent)
-    _ratio_label(fig, B, D, f"{bd_ext:.3f}", accent)
-    _ratio_label(fig, X, D, f"{xd:.3f}", accent)
+    if not compact:
+        _ratio_label(fig, X, B, f"{p['b_ratio']:.3f}", accent)
+        _ratio_label(fig, A, C, f"{p['c_ratio']:.3f}", accent)
+        _ratio_label(fig, B, D, f"{bd_ext:.3f}", accent)
+        _ratio_label(fig, X, D, f"{xd:.3f}", accent)
 
     # Label titik
     for lab, q in zip("XABCD", [X, A, B, C, D]):
+        if q[0] < start:
+            continue
         is_low = (lab in "XBD") if bull else (lab in "AC")
         fig.add_annotation(x=q[0], y=q[1], text=f"<b>{lab}</b>", showarrow=False,
                            yshift=-16 if is_low else 16, font=dict(color=COL["text"], size=14))
 
     # Kotak PRZ + harga batas
     zone_fill = ["rgba(167,139,250,0.30)", "rgba(167,139,250,0.15)"]
+    printed = []   # hindari label batas PRZ yang bertumpuk (beda < 0.5%)
     for k, z in enumerate(p["zones"]):
         x0 = C[0] + (D[0] - C[0]) // 2
         # Tebal minimum kotak (hanya visual, ±0.6% harga) agar zona sempit tetap terlihat.
@@ -606,10 +619,17 @@ def make_chart(code, df, p, scale_txt=""):
         y0v, y1v = mid - half, mid + half
         fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0v, y1=y1v,
                       fillcolor=zone_fill[min(k, 1)], line=dict(color=COL["violet"], width=1))
-        fig.add_annotation(x=x0, y=y1v, xanchor="left", yanchor="bottom", showarrow=False,
-                           text=f"PRZ {z['r']} XA · BC {z['bc_e']}",
+        if compact and k > 0:
+            pass
+        else:
+          fig.add_annotation(x=x0, y=y1v, xanchor="left", yanchor="bottom", showarrow=False,
+                           text=(f"PRZ {z['r']}" if compact else
+                                 f"PRZ {z['r']} XA · BC {z['bc_e']}"),
                            font=dict(color=COL["violet"], size=11), bgcolor="rgba(6,8,11,0.75)")
         for v, yv, anc in ((z["hi"], y1v, "bottom"), (z["lo"], y0v, "top")):
+            if any(abs(v - w) / max(abs(w), 1e-9) < 0.005 for w in printed):
+                continue
+            printed.append(v)
             fig.add_annotation(x=x1, y=yv, xanchor="right", yanchor=anc, showarrow=False,
                                text=f"({v:,.0f})", font=dict(color=COL["violet"], size=11))
 
@@ -627,6 +647,18 @@ def make_chart(code, df, p, scale_txt=""):
                            text=f"{lab} ({lvl:,.0f})", font=dict(color=colr, size=11),
                            bgcolor="rgba(6,8,11,0.7)")
 
+    # Harga sekarang
+    last_px = float(df["Close"].iloc[-1])
+    fig.add_shape(type="line", x0=start, x1=x1, y0=last_px, y1=last_px,
+                  line=dict(color="#ffffff", width=1.2, dash="dot"))
+    fig.add_trace(go.Scatter(x=[n - 1], y=[last_px], mode="markers",
+                             marker=dict(size=10, color="#ffffff", symbol="diamond",
+                                         line=dict(color=COL["bg"], width=1)),
+                             hoverinfo="skip"))
+    fig.add_annotation(x=start, y=last_px, xanchor="left", yanchor="bottom", showarrow=False,
+                       text=f"<b>HARGA {last_px:,.0f}</b>", font=dict(color="#000", size=11),
+                       bgcolor="#ffffff")
+
     # Panah proyeksi D -> TP2
     tx = min(x1 - 2, D[0] + proj // 2)
     fig.add_annotation(x=tx, y=p["tp2"], ax=D[0], ay=D[1], xref="x", yref="y",
@@ -636,7 +668,10 @@ def make_chart(code, df, p, scale_txt=""):
     title = f"{code} · {p['pattern']} {p['arah']} · {p['status']}"
     if scale_txt:
         title += f" · swing {scale_txt}"
-    _base_layout(fig, df, start, x1 + 2, title, accent)
+    _base_layout(fig, df, start, x1 + 2, title, accent, nticks=4 if compact else 7)
+    if compact:
+        fig.update_layout(height=460, title=dict(font=dict(size=12)),
+                          margin=dict(l=4, r=4, t=36, b=4))
     return fig
 
 
@@ -683,11 +718,19 @@ section[data-testid="stSidebar"] {{ background:#080b10; border-right:1px solid #
 @keyframes blink {{ 50% {{ opacity:0; }} }}
 .hb-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:12px; }}
 .hb-grid.six {{ grid-template-columns:repeat(6,1fr); }}
+.hb-grid.eight {{ grid-template-columns:repeat(4,1fr); }}
+.hb-lad {{ margin:4px 0 8px 0; }}
+.hb-lad-r {{ display:grid; grid-template-columns:1.6fr 1fr 0.8fr; gap:8px; padding:5px 10px;
+  background:{COL['panel']}; margin-bottom:3px; font-size:13px; }}
+.hb-lad-r .v {{ text-align:right; color:{COL['text']}; font-weight:700; }}
+.hb-lad-r .p {{ text-align:right; color:{COL['dim']}; }}
+.hb-lad-r.now {{ background:#1d2630; outline:1px solid #ffffff; }}
+.hb-lad-r.now .v {{ color:#ffffff; }}
 .hb-card {{ border:1px solid #1a2430; background:{COL['panel']}; padding:10px 14px; }}
 .hb-card .k {{ color:{COL['dim']}; font-size:11px; letter-spacing:1px; }}
 .hb-card .v {{ font-size:22px; font-weight:800; }}
 @media (max-width: 640px) {{
-  .hb-grid, .hb-grid.six {{ grid-template-columns:repeat(2,1fr); }}
+  .hb-grid, .hb-grid.six, .hb-grid.eight {{ grid-template-columns:repeat(2,1fr); }}
   .hb-card .v {{ font-size:18px; }} .hb-title {{ font-size:20px; }} }}
 .hb-fn {{ margin:6px 0; }}
 .hb-fn-l {{ color:{COL['dim']}; font-size:12px; margin-bottom:2px; }}
@@ -724,21 +767,60 @@ def cards_html(items, cls=""):
 STATUS_COL = {"Di PRZ": COL["violet"], "Menuju PRZ": COL["cyan"], "Gagal": COL["red"]}
 
 
+def ladder_html(p):
+    """Tangga level: semua harga penting diurutkan, harga sekarang disorot, % dari harga sekarang."""
+    cur = p["price"]
+    items = [("TP2", p["tp2"], COL["green"]), ("TP1", p["tp1"], COL["green"]),
+             ("ENTRY D", p["entry"], COL["violet"]), ("STOP", p["sl_eff"], COL["red"])]
+    for z in p["zones"]:
+        items.append((f"PRZ {z['r']} atas", z["hi"], COL["violet"]))
+        items.append((f"PRZ {z['r']} bawah", z["lo"], COL["violet"]))
+    if p["status"] == "Menuju PRZ":
+        items.append(("INVALID (C)", p["C"][1], COL["amber"]))
+    # gabungkan level yang praktis sama (beda < 0.1%)
+    items.sort(key=lambda t: -t[1])
+    rows, seen = [], []
+    for lab, v, c in items:
+        if any(abs(v - w) / max(abs(w), 1e-9) < 0.003 for w in seen):
+            continue
+        seen.append(v)
+        rows.append((lab, v, c, False))
+    rows.append(("HARGA SEKARANG", cur, "#ffffff", True))
+    rows.sort(key=lambda t: -t[1])
+    html = '<div class="hb-lad">'
+    for lab, v, c, is_now in rows:
+        pct = (v / cur - 1) * 100
+        pct_txt = "" if is_now else f"{pct:+.1f}%"
+        cls = "hb-lad-r now" if is_now else "hb-lad-r"
+        html += (f'<div class="{cls}" style="border-left:3px solid {c}">'
+                 f'<span class="l" style="color:{c}">{lab}</span>'
+                 f'<span class="v">{v:,.0f}</span><span class="p">{pct_txt}</span></div>')
+    return html + "</div>"
+
+
 def render_detail(code, df, p, scale_txt="", key=""):
-    """Panel angka + grafik + tabel swing. Dipakai dialog screener dan tab Analisa Emiten."""
-    rr = f"{p['rr']:.2f}" if pd.notna(p["rr"]) else "-"
-    dist = "-" if pd.isna(p["dist"]) else f"{p['dist']:.2f}%"
+    """Panel angka + tangga level + grafik + tabel swing."""
+    def f2(v):
+        return f"{v:.2f}" if pd.notna(v) else "-"
+    stop_lab = (f"STOP · {('close' if p.get('stop_basis') == 'Close harian' else 'low')}"
+                + (f" +{p['buf_atr']:g}ATR" if p.get("buf_atr", 0) > 0 else ""))
+    rr_now_col = COL["green"] if pd.notna(p["rr_now2"]) and p["rr_now2"] >= 2 else (
+        COL["amber"] if pd.notna(p["rr_now2"]) and p["rr_now2"] >= 1 else COL["red"])
     st.markdown(cards_html([
         ("STATUS", p["status"], STATUS_COL[p["status"]]),
+        ("HARGA SEKARANG", f"{p['price']:,.0f}", "#ffffff"),
         ("ENTRY D", f"{p['entry']:,.0f}", COL["violet"]),
-        (f"STOP · {('close' if p.get('stop_basis') == 'Close harian' else 'low')}"
-         + (f" +{p['buf_atr']:g}ATR" if p.get("buf_atr", 0) > 0 else ""),
-         f"{p['sl_eff']:,.0f}", COL["red"]),
+        (stop_lab, f"{p['sl_eff']:,.0f}", COL["red"]),
         ("TP1 · 0.382 AD", f"{p['tp1']:,.0f}", COL["green"]),
         ("TP2 · 0.618 AD", f"{p['tp2']:,.0f}", COL["green"]),
-        ("R:R TP2 · JARAK", f"{rr} · {dist}", COL["text"]),
-    ], "six"), unsafe_allow_html=True)
-    st.plotly_chart(make_chart(code, df, p, scale_txt), width="stretch",
+        ("R:R DARI ENTRY D · TP2", f2(p["rr"]), COL["text"]),
+        ("R:R DARI HARGA SKRG · TP1 / TP2", f"{f2(p['rr_now1'])} / {f2(p['rr_now2'])}", rr_now_col),
+    ], "eight"), unsafe_allow_html=True)
+    st.caption(f"Masuk di harga sekarang: risiko {p['to_sl']:+.1f}% ke stop, potensi "
+               f"{p['to_tp1']:+.1f}% ke TP1 dan {p['to_tp2']:+.1f}% ke TP2.")
+    with st.expander("▌TANGGA LEVEL (posisi harga sekarang)", expanded=compact_mode):
+        st.markdown(ladder_html(p), unsafe_allow_html=True)
+    st.plotly_chart(make_chart(code, df, p, scale_txt, compact=compact_mode), width="stretch",
                     config={"displaylogo": False, "scrollZoom": True}, key=f"ch_{key}")
 
     def dt(q):
@@ -767,8 +849,33 @@ def render_detail(code, df, p, scale_txt="", key=""):
                                 for k in ["Harga XA", "Harga BC", "Bawah", "Atas"]})
 
 
+# ---------------- Pengaturan dari URL (agar tersimpan lewat bookmark) ----------------
+QP = st.query_params
+
+
+def qp_get(key, default, cast=str):
+    try:
+        return cast(QP[key]) if key in QP else default
+    except Exception:
+        return default
+
+
+def qp_list(key, options, default):
+    if key not in QP:
+        return default
+    vals = [v for v in str(QP[key]).split(",") if v in options]
+    return vals
+
+
+SCALE_OPTS = list(SCALES.keys()) + ["Kustom"]
+
 # ---------------- Sidebar ----------------
 with st.sidebar:
+    st.markdown("### ▌TAMPILAN")
+    compact_mode = st.toggle("Grafik ringkas (HP)", value=qp_get("hp", "0") == "1",
+                             help="Grafik di-zoom dari titik B sampai hari ini, label rasio "
+                                  "disembunyikan, dan tangga level langsung terbuka.")
+
     st.markdown("### ▌UNIVERSE")
     src = st.radio("Sumber kode saham", ["Daftar bawaan", "Tempel daftar", "Unggah file"],
                    label_visibility="collapsed")
@@ -784,20 +891,28 @@ with st.sidebar:
     st.caption(f"{len(codes)} kode siap dipindai")
 
     st.markdown("### ▌MESIN ZIGZAG")
-    atr_len = st.number_input("Periode ATR", 5, 50, 14, 1)
-    scale_name = st.selectbox("Skala swing (screener)", list(SCALES.keys()) + ["Kustom"])
+    atr_len = st.number_input("Periode ATR", 5, 50, qp_get("atr", 14, int), 1)
+    sk = qp_get("sk", SCALE_OPTS[0])
+    scale_name = st.selectbox("Skala swing (screener)", SCALE_OPTS,
+                              index=SCALE_OPTS.index(sk) if sk in SCALE_OPTS else 0)
     if scale_name == "Kustom":
-        mult = st.number_input("Kunci swing (x ATR)", 0.5, 10.0, 1.5, 0.1)
+        mult = st.number_input("Kunci swing (x ATR)", 0.5, 10.0, qp_get("m", 1.5, float), 0.1)
     else:
         mult = SCALES[scale_name]
-    max_age = st.slider("Umur maks. titik C (hari bursa)", 5, 250,
-                        SCALE_AGE.get(scale_name, 40), key=f"age_{scale_name}")
+    age_def = qp_get("age", SCALE_AGE.get(scale_name, 40), int) if sk == scale_name \
+        else SCALE_AGE.get(scale_name, 40)
+    max_age = st.slider("Umur maks. titik C (hari bursa)", 5, 250, min(max(age_def, 5), 250),
+                        key=f"age_{scale_name}")
 
     st.markdown("### ▌ATURAN STOP")
-    stop_basis = st.radio("Basis stop", ["Low intraday", "Close harian"], horizontal=True,
+    STOP_OPTS = ["Low intraday", "Close harian"]
+    sb = qp_get("sb", STOP_OPTS[0])
+    stop_basis = st.radio("Basis stop", STOP_OPTS, horizontal=True,
+                          index=STOP_OPTS.index(sb) if sb in STOP_OPTS else 0,
                           help="Low intraday: pola Gagal begitu ekor candle menembus SL. "
                                "Close harian: hanya dihitung jebol kalau harga DITUTUP di luar SL.")
-    buf_atr = st.number_input("Buffer di luar SL (× ATR)", 0.0, 3.0, 0.0, 0.25,
+    buf_atr = st.number_input("Buffer di luar SL (× ATR)", 0.0, 3.0, qp_get("buf", 0.0, float),
+                              0.25,
                               help="Toleransi tambahan di luar SL pola. ATR diambil saat titik C. "
                                    "Contoh 0.5 = pola baru Gagal jika tembus SL lebih dari "
                                    "setengah ATR.")
@@ -809,12 +924,31 @@ with st.sidebar:
         load_one.clear()
 
     st.markdown("### ▌FILTER SCREENER")
-    f_pola = st.multiselect("Pola", list(PATTERNS.keys()), default=list(PATTERNS.keys()))
-    f_arah = st.multiselect("Arah", ["Bullish", "Bearish"], default=["Bullish", "Bearish"])
-    f_status = st.multiselect("Status", list(STATUS_ORDER.keys()),
-                              default=["Di PRZ", "Menuju PRZ"])
-    f_dist = st.slider("Jarak maks. ke PRZ (%)", 0.0, 50.0, 15.0, 0.5)
-    f_val = st.number_input("Value transaksi minimum harian 20H (miliar)", 0.0, 1000.0, 5.0, 1.0)
+    PAT_OPTS = list(PATTERNS.keys())
+    f_pola = st.multiselect("Pola", PAT_OPTS, default=qp_list("pola", PAT_OPTS, PAT_OPTS))
+    f_arah = st.multiselect("Arah", ["Bullish", "Bearish"],
+                            default=qp_list("arah", ["Bullish", "Bearish"], ["Bullish", "Bearish"]))
+    ST_OPTS = list(STATUS_ORDER.keys())
+    f_status = st.multiselect("Status", ST_OPTS,
+                              default=qp_list("st", ST_OPTS, ["Di PRZ", "Menuju PRZ"]))
+    f_dist = st.slider("Jarak maks. ke PRZ (%)", 0.0, 50.0,
+                       min(max(qp_get("dist", 15.0, float), 0.0), 50.0), 0.5)
+    f_val = st.number_input("Value transaksi minimum harian 20H (miliar)", 0.0, 1000.0,
+                            qp_get("val", 5.0, float), 1.0)
+
+    st.caption("Pengaturan ikut tersimpan di alamat (URL) halaman. Bookmark halaman ini supaya "
+               "saat dibuka lagi pengaturannya sama.")
+
+# Tulis balik pengaturan ke URL
+try:
+    st.query_params.update({
+        "hp": "1" if compact_mode else "0", "atr": str(int(atr_len)), "sk": scale_name,
+        "m": f"{mult:g}", "age": str(int(max_age)), "sb": stop_basis, "buf": f"{buf_atr:g}",
+        "pola": ",".join(f_pola), "arah": ",".join(f_arah), "st": ",".join(f_status),
+        "dist": f"{f_dist:g}", "val": f"{f_val:g}",
+    })
+except Exception:
+    pass
 
 tab_scr, tab_emt = st.tabs(["▌SCREENER", "▌ANALISA EMITEN"])
 
@@ -830,7 +964,8 @@ with tab_scr:
     if table.empty:
         table = pd.DataFrame(columns=["_id", "Kode", "Pola", "Arah", "Status", "Harga",
                                       "Jarak PRZ %", "PRZ Bawah", "PRZ Atas", "Entry D", "SL",
-                                      "SL Efektif", "Jarak ke SL %", "TP1", "TP2", "R:R TP2", "B/XA", "C/AB", "Umur C",
+                                      "SL Efektif", "Jarak ke SL %", "TP1", "TP2", "R:R TP2", "R:R Skrg TP1", "R:R Skrg TP2",
+                                      "Ke SL %", "Ke TP2 %", "B/XA", "C/AB", "Umur C",
                                       "D Terkunci", "Value Min 20H (M)"])
 
     # Saring bertahap supaya alasan tiap baris tersembunyi bisa dihitung
@@ -863,7 +998,10 @@ with tab_scr:
         ("MENUJU PRZ", int((view["Status"] == "Menuju PRZ").sum()), COL["cyan"]),
         ("GAGAL", int((view["Status"] == "Gagal").sum()), COL["red"]),
     ]), unsafe_allow_html=True)
-    rincian = f"{len(table)} pola terdeteksi · {len(view)} tampil"
+    skala_txt = (f"skala {scale_name.split(' ')[0]} {mult:g}×ATR" if scale_name != "Kustom"
+                 else f"skala kustom {mult:g}×ATR")
+    stop_txt = f"stop {stop_basis.lower()}" + (f" +{buf_atr:g}ATR" if buf_atr > 0 else "")
+    rincian = (f"{len(table)} pola terdeteksi · {len(view)} tampil · {skala_txt} · {stop_txt}")
     if hid:
         rincian += " · tersembunyi oleh filter: " + ", ".join(hid)
     st.markdown(f'<div class="hb-sub" style="margin:-4px 0 10px 0">{rincian}</div>',
@@ -926,11 +1064,13 @@ with tab_scr:
             on_select="rerun", selection_mode="single-row", key=fkey,
             column_order=["Kode", "Pola", "Arah", "Status", "Harga", "Jarak PRZ %",
                           "PRZ Bawah", "PRZ Atas", "Entry D", "SL", "SL Efektif", "Jarak ke SL %",
-                          "TP1", "TP2", "R:R TP2", "B/XA", "C/AB", "Umur C", "D Terkunci", "Value Min 20H (M)"],
+                          "TP1", "TP2", "R:R TP2", "R:R Skrg TP1", "R:R Skrg TP2",
+                          "Ke SL %", "Ke TP2 %", "B/XA", "C/AB", "Umur C", "D Terkunci", "Value Min 20H (M)"],
             column_config={
                 "Harga": num0, "PRZ Bawah": num0, "PRZ Atas": num0, "Entry D": num0,
                 "SL": num0, "SL Efektif": num0, "Jarak ke SL %": num2,
                 "TP1": num0, "TP2": num0, "Jarak PRZ %": num2, "R:R TP2": num2,
+                "R:R Skrg TP1": num2, "R:R Skrg TP2": num2, "Ke SL %": num2, "Ke TP2 %": num2,
                 "B/XA": num3, "C/AB": num3,
                 "Value Min 20H (M)": st.column_config.NumberColumn(format="%.1f"),
             },
