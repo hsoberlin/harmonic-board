@@ -453,8 +453,15 @@ FONT = "JetBrains Mono, Consolas, monospace"
 def _base_layout(fig, df, start, x_end, title, title_color):
     xs = np.arange(start, len(df))
     step = max(1, len(xs) // 7)
-    tv = list(xs[::step])
-    tt = [df.index[i].strftime("%b %y") for i in tv]
+    tv = list(xs[step // 2::step])  # geser dari tepi kiri agar label pertama tidak terpotong
+    tt, prev_y = [], None
+    for i in tv:
+        d = df.index[i]
+        lab = d.strftime("%d %b")
+        if d.year != prev_y:          # tampilkan tahun hanya saat berganti tahun
+            lab += d.strftime(" '%y")
+            prev_y = d.year
+        tt.append(lab)
     fig.update_layout(
         template="plotly_dark", paper_bgcolor=COL["bg"], plot_bgcolor=COL["panel"],
         font=dict(family=FONT, color=COL["text"], size=12),
@@ -552,12 +559,18 @@ def make_chart(code, df, p, scale_txt=""):
     zone_fill = ["rgba(167,139,250,0.30)", "rgba(167,139,250,0.15)"]
     for k, z in enumerate(p["zones"]):
         x0 = C[0] + (D[0] - C[0]) // 2
-        fig.add_shape(type="rect", x0=x0, x1=x1, y0=z["lo"], y1=z["hi"],
+        # Tebal minimum kotak (hanya visual, ±0.6% harga) agar zona sempit tetap terlihat.
+        # Angka batas di kanan tetap harga PRZ sebenarnya.
+        mid = (z["lo"] + z["hi"]) / 2
+        half = max((z["hi"] - z["lo"]) / 2, abs(mid) * 0.006)
+        y0v, y1v = mid - half, mid + half
+        fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0v, y1=y1v,
                       fillcolor=zone_fill[min(k, 1)], line=dict(color=COL["violet"], width=1))
-        fig.add_annotation(x=x0, y=(z["lo"] + z["hi"]) / 2, xanchor="left", showarrow=False,
-                           text=f"PRZ {z['r']} XA", font=dict(color=COL["violet"], size=11))
-        for v, anc in ((z["hi"], "bottom"), (z["lo"], "top")):
-            fig.add_annotation(x=x1, y=v, xanchor="right", yanchor=anc, showarrow=False,
+        fig.add_annotation(x=x0, y=y1v, xanchor="left", yanchor="bottom", showarrow=False,
+                           text=f"PRZ {z['r']} XA · BC {z['bc_e']}",
+                           font=dict(color=COL["violet"], size=11), bgcolor="rgba(6,8,11,0.75)")
+        for v, yv, anc in ((z["hi"], y1v, "bottom"), (z["lo"], y0v, "top")):
+            fig.add_annotation(x=x1, y=yv, xanchor="right", yanchor=anc, showarrow=False,
                                text=f"({v:,.0f})", font=dict(color=COL["violet"], size=11))
 
     # SL, TP, Invalid
